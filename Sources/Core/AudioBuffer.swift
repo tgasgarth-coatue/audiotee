@@ -1,7 +1,9 @@
 import CoreAudio
 import Foundation
 
-public class AudioBuffer {
+/// Ring buffer for accumulating audio samples and emitting fixed-size chunks.
+/// Named AudioChunkBuffer to avoid conflict with CoreAudio.AudioBuffer.
+public class AudioChunkBuffer {
   private var buffer: [UInt8]
   private var writeIndex: Int = 0
   private var readIndex: Int = 0

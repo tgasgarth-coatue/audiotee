@@ -6,7 +6,7 @@ public class AudioRecorder {
   private var deviceID: AudioObjectID
   private var ioProcID: AudioDeviceIOProcID?
   private var finalFormat: AudioStreamBasicDescription!
-  private var audioBuffer: AudioBuffer?
+  private var audioBuffer: AudioChunkBuffer?
   private var outputHandler: AudioOutputHandler
   private var converter: AudioFormatConverter?
 
@@ -21,7 +21,7 @@ public class AudioRecorder {
     let sourceFormat = AudioFormatManager.getDeviceFormat(deviceID: deviceID)
 
     // Set up the audio buffer using source format and configurable chunk duration
-    self.audioBuffer = AudioBuffer(format: sourceFormat, chunkDuration: chunkDuration)
+    self.audioBuffer = AudioChunkBuffer(format: sourceFormat, chunkDuration: chunkDuration)
 
     if let targetSampleRate = convertToSampleRate {
       // Validate sample rate

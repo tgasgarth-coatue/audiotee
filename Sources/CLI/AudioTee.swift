@@ -8,33 +8,41 @@ struct AudioTee {
   var stereo: Bool = false
   var sampleRate: Double?
   var chunkDuration: Double = 0.2
+  
+  // Mic capture mode with AEC (Acoustic Echo Cancellation)
+  var micMode: Bool = false
 
   init() {}
 
   static func main() {
     let parser = SimpleArgumentParser(
       programName: "audiotee",
-      abstract: "Capture system audio and stream to stdout",
+      abstract: "Capture system audio or microphone with echo cancellation",
       discussion: """
-        AudioTee captures system audio using Core Audio taps and streams it as structured output.
+        AudioTee captures audio using Core Audio and streams it as structured output.
 
-        Process filtering:
+        Modes:
+        • Default (no flags): Capture system audio (what's playing to speakers)
+        • --mic: Capture microphone with Acoustic Echo Cancellation (AEC)
+                 This removes speaker audio from the mic recording - same tech as FaceTime/Zoom
+
+        Process filtering (system audio mode only):
         • include-processes: Only tap specified process IDs (empty = all processes)
         • exclude-processes: Tap all processes except specified ones
         • mute: How to handle processes being tapped
 
         Examples:
-          audiotee                              # Auto format, tap all processes
-          audiotee --sample-rate 16000          # Convert to 16kHz mono for ASR
-          audiotee --sample-rate 8000           # Convert to 8kHz for telephony
+          audiotee                              # Capture system audio
+          audiotee --mic                        # Capture mic with AEC (echo cancelled)
+          audiotee --mic --sample-rate 16000    # Mic with AEC at 16kHz for ASR
+          audiotee --sample-rate 16000          # System audio at 16kHz
           audiotee --include-processes 1234     # Only tap process 1234
-          audiotee --include-processes 1234 5678 9012  # Tap only these processes
-          audiotee --exclude-processes 1234 5678       # Tap everything except these
           audiotee --mute                       # Mute processes being tapped
         """
     )
 
     // Configure arguments
+    parser.addFlag(name: "mic", help: "Capture microphone with AEC (echo cancellation)")
     parser.addArrayOption(
       name: "include-processes",
       help: "Process IDs to include (space-separated, empty = all processes)")
@@ -55,6 +63,7 @@ struct AudioTee {
       var audioTee = AudioTee()
 
       // Extract values
+      audioTee.micMode = parser.getFlag("mic")
       audioTee.includeProcesses = try parser.getArrayValue("include-processes", as: Int32.self)
       audioTee.excludeProcesses = try parser.getArrayValue("exclude-processes", as: Int32.self)
       audioTee.mute = parser.getFlag("mute")
@@ -89,12 +98,21 @@ struct AudioTee {
       throw ArgumentParserError.validationFailed(
         "Cannot specify both --include-processes and --exclude-processes")
     }
+    
+    // Mic mode doesn't support process filtering
+    if micMode && (!includeProcesses.isEmpty || !excludeProcesses.isEmpty) {
+      throw ArgumentParserError.validationFailed(
+        "Process filtering (--include-processes, --exclude-processes) is not supported in --mic mode")
+    }
+    
+    if micMode && mute {
+      throw ArgumentParserError.validationFailed(
+        "--mute is not supported in --mic mode")
+    }
   }
 
   func run() throws {
     setupSignalHandlers()
-
-    Logger.info("Starting AudioTee...")
 
     // Validate chunk duration
     guard chunkDuration > 0 && chunkDuration <= 5.0 else {
@@ -103,6 +121,47 @@ struct AudioTee {
         context: ["chunk_duration": String(chunkDuration), "valid_range": "0.0 < duration <= 5.0"])
       throw ExitCode.failure
     }
+
+    if micMode {
+      try runMicMode()
+    } else {
+      try runSystemAudioMode()
+    }
+  }
+  
+  /// Capture microphone with Voice Processing I/O (AEC enabled)
+  private func runMicMode() throws {
+    Logger.info("Starting AudioTee in MIC mode (with AEC)...")
+    
+    let outputHandler = BinaryAudioOutputHandler()
+    let micCapture = VoiceProcessingMicCapture(
+      outputHandler: outputHandler,
+      targetSampleRate: sampleRate ?? 16000,  // Default to 16kHz for ASR
+      chunkDuration: chunkDuration
+    )
+    
+    do {
+      try micCapture.start()
+    } catch {
+      Logger.error("Failed to start mic capture with AEC", context: ["error": String(describing: error)])
+      throw ExitCode.failure
+    }
+    
+    // Run until the run loop is stopped (by signal handler)
+    while true {
+      let result = CFRunLoopRunInMode(CFRunLoopMode.defaultMode, 0.1, false)
+      if result == CFRunLoopRunResult.stopped || result == CFRunLoopRunResult.finished {
+        break
+      }
+    }
+
+    Logger.info("Shutting down...")
+    micCapture.stop()
+  }
+  
+  /// Capture system audio (original mode)
+  private func runSystemAudioMode() throws {
+    Logger.info("Starting AudioTee in SYSTEM AUDIO mode...")
 
     // Convert include/exclude processes to TapConfiguration format
     let (processes, isExclusive) = convertProcessFlags()
